@@ -121,7 +121,7 @@ class PolymarketWSClient:
                 logger.error("[WS] Connection error: %s", exc)
 
     async def _connect_and_listen(self) -> None:
-        async with websockets.connect(MARKET_WS_URL) as ws:
+        async with websockets.connect(MARKET_WS_URL, max_size=4 * 1024 * 1024) as ws:
             logger.info("[WS] Connected. Subscribing %d tokens in batches of %d...",
                         len(self._token_ids), SUBSCRIBE_BATCH)
             for i in range(0, len(self._token_ids), SUBSCRIBE_BATCH):
