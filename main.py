@@ -274,9 +274,30 @@ async def _ws_arb_loop(args: argparse.Namespace) -> None:
             )
             metrics.print_summary()
 
+    # Periodic divergence + value betting scan (runs in background, off the hot path)
+    async def divergence_scan_loop() -> None:
+        from strategies.sports_divergence import scan_all_sports
+        from strategies.value_betting import find_value_bets
+        while True:
+            await asyncio.sleep(settings.SCAN_INTERVAL_SECONDS)
+            try:
+                signals = await asyncio.to_thread(scan_all_sports)
+                bets = find_value_bets(signals, bankroll=bankroll)
+                metrics.record_scan("value", 0, len(bets))
+                for bet in bets:
+                    print(bet)
+                    token_id = bet.signal.market_id
+                    price = bet.signal.poly_prob if bet.signal.side == "YES" else (1 - bet.signal.poly_prob)
+                    r = await asyncio.to_thread(om.place_limit_order, token_id, "BUY", price, bet.capped_size_usdc)
+                    metrics.record_order(r.success, r.dry_run)
+                    print(r)
+            except Exception as exc:
+                logger.warning("Divergence scan error: %s", exc)
+
     await asyncio.gather(
         client.run(),
         print_stats_loop(),
+        divergence_scan_loop(),
     )
 
 
