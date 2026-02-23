@@ -44,5 +44,5 @@ BOT_MODE: str = os.getenv("BOT_MODE", "dry_run")  # "dry_run" or "live"
 DRY_RUN: bool = BOT_MODE != "live"
 
 # --- Polling ---
-SCAN_INTERVAL_SECONDS: int = 30
-MAX_MARKETS_PER_SCAN: int = 200
+SCAN_INTERVAL_SECONDS: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "30"))
+MAX_MARKETS_PER_SCAN: int = int(os.getenv("MAX_MARKETS_PER_SCAN", "200"))
