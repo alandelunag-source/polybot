@@ -22,6 +22,14 @@ from monitoring.logger import setup_logging
 from monitoring.metrics import metrics
 from config import settings
 
+
+def _execute_bet(bet, om, metrics) -> None:
+    """Place a single value/divergence bet and record the result."""
+    price = bet.signal.poly_prob if bet.signal.side == "YES" else (1 - bet.signal.poly_prob)
+    r = om.place_limit_order(bet.signal.market_id, "BUY", price, bet.capped_size_usdc)
+    metrics.record_order(r.success, r.dry_run)
+    print(r)
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,14 +70,19 @@ def cmd_scan(args: argparse.Namespace) -> None:
                 print()
 
     elif strategy == "value":
-        sport = args.sport or "soccer_epl"
         bankroll = args.bankroll or 1000.0
-        from strategies.sports_divergence import find_divergences
-        from strategies.value_betting import find_value_bets
-
-        print(f"Running value betting scan for: {sport}  (bankroll=${bankroll:.2f})")
-        signals = find_divergences(sport)
-        bets = find_value_bets(signals, bankroll=bankroll)
+        if args.sport:
+            # Legacy: single sport via divergence path
+            from strategies.sports_divergence import find_divergences
+            from strategies.value_betting import find_value_bets
+            print(f"Running divergence value scan for: {args.sport}  (bankroll=${bankroll:.2f})")
+            signals = find_divergences(args.sport)
+            bets = find_value_bets(signals, bankroll=bankroll)
+        else:
+            # Standalone: multi-sport independent edge scan
+            from strategies.value_betting import standalone_value_scan
+            print(f"Running standalone value scan across all sports  (bankroll=${bankroll:.2f})")
+            bets = standalone_value_scan(bankroll=bankroll)
         metrics.record_scan("value", 0, len(bets))
 
         if not bets:
@@ -129,20 +142,20 @@ def cmd_run(args: argparse.Namespace) -> None:
                 print(r1, r2)
 
             # --- Sports divergence + value bets ---
+            from strategies.value_betting import standalone_value_scan
             signals = scan_all_sports()
             bets = find_value_bets(signals, bankroll=bankroll)
             metrics.record_scan("value", 0, len(bets))
             for bet in bets:
                 print(bet)
-                token_id = bet.signal.market_id  # simplified; real use needs token_id
-                r = om.place_limit_order(
-                    token_id,
-                    "BUY",
-                    bet.signal.poly_prob if bet.signal.side == "YES" else (1 - bet.signal.poly_prob),
-                    bet.capped_size_usdc,
-                )
-                metrics.record_order(r.success, r.dry_run)
-                print(r)
+                _execute_bet(bet, om, metrics)
+
+            # --- Standalone value bets ---
+            standalone_bets = standalone_value_scan(bankroll)
+            metrics.record_scan("value_standalone", 0, len(standalone_bets))
+            for bet in standalone_bets:
+                print(bet)
+                _execute_bet(bet, om, metrics)
 
             metrics.print_summary()
             print(f"Sleeping {settings.SCAN_INTERVAL_SECONDS}s...\n")
@@ -277,18 +290,28 @@ async def _ws_arb_loop(args: argparse.Namespace) -> None:
     # Periodic divergence + value betting scan (runs in background, off the hot path)
     async def divergence_scan_loop() -> None:
         from strategies.sports_divergence import scan_all_sports
-        from strategies.value_betting import find_value_bets
+        from strategies.value_betting import find_value_bets, standalone_value_scan
         while True:
             await asyncio.sleep(settings.SCAN_INTERVAL_SECONDS)
             try:
+                # Divergence-based value bets
                 signals = await asyncio.to_thread(scan_all_sports)
                 bets = find_value_bets(signals, bankroll=bankroll)
                 metrics.record_scan("value", 0, len(bets))
                 for bet in bets:
                     print(bet)
-                    token_id = bet.signal.market_id
                     price = bet.signal.poly_prob if bet.signal.side == "YES" else (1 - bet.signal.poly_prob)
-                    r = await asyncio.to_thread(om.place_limit_order, token_id, "BUY", price, bet.capped_size_usdc)
+                    r = await asyncio.to_thread(om.place_limit_order, bet.signal.market_id, "BUY", price, bet.capped_size_usdc)
+                    metrics.record_order(r.success, r.dry_run)
+                    print(r)
+
+                # Standalone value bets (independent signal)
+                standalone_bets = await asyncio.to_thread(standalone_value_scan, bankroll)
+                metrics.record_scan("value_standalone", 0, len(standalone_bets))
+                for bet in standalone_bets:
+                    print(bet)
+                    price = bet.signal.poly_prob if bet.signal.side == "YES" else (1 - bet.signal.poly_prob)
+                    r = await asyncio.to_thread(om.place_limit_order, bet.signal.market_id, "BUY", price, bet.capped_size_usdc)
                     metrics.record_order(r.success, r.dry_run)
                     print(r)
             except Exception as exc:

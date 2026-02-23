@@ -44,5 +44,19 @@ BOT_MODE: str = os.getenv("BOT_MODE", "dry_run")  # "dry_run" or "live"
 DRY_RUN: bool = BOT_MODE != "live"
 
 # --- Polling ---
-SCAN_INTERVAL_SECONDS: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "30"))
+SCAN_INTERVAL_SECONDS: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 MAX_MARKETS_PER_SCAN: int = int(os.getenv("MAX_MARKETS_PER_SCAN", "200"))
+
+# --- Odds-API.io (standalone value betting) ---
+# Free tier: 2,400 req/day. At VALUE_SPORTS_PER_CYCLE=5 + SCAN_INTERVAL_SECONDS=300:
+# 5 calls/5min = 1,440/day — safely within free limits.
+ODDS_API_IO_KEY: str = os.getenv("ODDS_API_IO_KEY", "")
+
+# --- Standalone value betting thresholds ---
+VALUE_MIN_EDGE: float = float(os.getenv("VALUE_MIN_EDGE", "0.04"))
+VALUE_MIN_COMPOSITE_SCORE: float = float(os.getenv("VALUE_MIN_COMPOSITE_SCORE", "0.40"))
+VALUE_SPORTS_PER_CYCLE: int = int(os.getenv("VALUE_SPORTS_PER_CYCLE", "5"))
+VALUE_LINE_MOVE_THRESHOLD: float = float(os.getenv("VALUE_LINE_MOVE_THRESHOLD", "0.02"))
+VALUE_WEIGHT_EDGE: float = float(os.getenv("VALUE_WEIGHT_EDGE", "0.50"))
+VALUE_WEIGHT_CONSENSUS: float = float(os.getenv("VALUE_WEIGHT_CONSENSUS", "0.30"))
+VALUE_WEIGHT_LINE: float = float(os.getenv("VALUE_WEIGHT_LINE", "0.20"))
