@@ -124,6 +124,8 @@ def cmd_run(args: argparse.Namespace) -> None:
                 r2 = om.place_limit_order(opp.no_token_id, "BUY", opp.no_ask, size)
                 metrics.record_order(r1.success, r1.dry_run)
                 metrics.record_order(r2.success, r2.dry_run)
+                if r1.success and r2.success:
+                    metrics.record_pnl(opp.net_spread * size)
                 print(r1, r2)
 
             # --- Sports divergence + value bets ---
@@ -240,6 +242,8 @@ async def _ws_arb_loop(args: argparse.Namespace) -> None:
 
         metrics.record_order(r1.success, r1.dry_run)
         metrics.record_order(r2.success, r2.dry_run)
+        if r1.success and r2.success:
+            metrics.record_pnl(opp.net_spread * size)
 
         # If one leg failed, cancel the other
         if r1.success and not r2.success and r1.order_id:
