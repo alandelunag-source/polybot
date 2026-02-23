@@ -104,6 +104,7 @@ class OrderManager:
                 "side": side,
                 "price": price,
                 "size": shares,
+                "size_usdc": size_usdc,
             }
             self.risk.record(token_id, size_usdc)
             logger.info("Order placed: id=%s %s", order_id, side)
@@ -127,12 +128,17 @@ class OrderManager:
             )
 
     def cancel_order(self, order_id: str) -> bool:
+        order = self._open_orders.get(order_id)
         if settings.DRY_RUN:
             logger.info("[DRY RUN] Would cancel order %s", order_id)
+            if order:
+                self.risk.release(order["token_id"], order["size_usdc"])
             self._open_orders.pop(order_id, None)
             return True
         try:
             clob_client.cancel_order(order_id)
+            if order:
+                self.risk.release(order["token_id"], order["size_usdc"])
             self._open_orders.pop(order_id, None)
             return True
         except Exception as exc:
