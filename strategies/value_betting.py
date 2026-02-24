@@ -217,7 +217,11 @@ def scan_sport_for_value(
         return []
 
     if poly_markets is None:
-        sport_label = sport.replace("_", " ").title()
+        # Handle "sport_slug/league_slug" composite from odds_api_io
+        if "/" in sport:
+            sport_label = sport.split("/", 1)[1].replace("-", " ").title()
+        else:
+            sport_label = sport.replace("_", " ").title()
         try:
             poly_markets = gamma_api.get_sports_markets(sport_label)
         except Exception as exc:
