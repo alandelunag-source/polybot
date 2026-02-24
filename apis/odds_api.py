@@ -8,6 +8,11 @@ from typing import Any, Optional
 import requests
 from config import settings
 
+# Process-lifetime sports cache
+_sports_cache: Optional[list[str]] = None
+# Line movement snapshots: event_id → {home_prob, away_prob}
+_prob_snapshot: dict[str, dict] = {}
+
 SESSION = requests.Session()
 
 
@@ -141,3 +146,70 @@ def get_consensus_probs(sport: str) -> list[dict]:
         )
 
     return results
+
+
+def get_outright_probs(sport_key: str) -> dict[str, float]:
+    """
+    Fetch outright winner odds for a championship and return
+    {team_name: consensus_implied_prob} normalised across all bookmakers.
+    sport_key examples: 'icehockey_nhl_championship_winner', 'basketball_nba_championship_winner'
+    """
+    # Outright sport keys use market type "outrights", not "h2h" — can't reuse get_odds()
+    events = _get(
+        f"/sports/{sport_key}/odds",
+        params={"regions": "us,uk,eu", "oddsFormat": "decimal"},
+    )
+    team_raw: dict[str, list[float]] = {}
+    for evt in events:
+        for bk in evt.get("bookmakers", []):
+            for mkt in bk.get("markets", []):
+                if mkt.get("key") != "outrights":
+                    continue
+                outcomes = mkt.get("outcomes", [])
+                if not outcomes:
+                    continue
+                # Normalize over all teams so probs sum to 1
+                raw = {o["name"]: decimal_to_implied_prob(o["price"]) for o in outcomes if o.get("price")}
+                total = sum(raw.values())
+                if total <= 0:
+                    continue
+                for name, p in raw.items():
+                    team_raw.setdefault(name, []).append(p / total)
+    return {name: sum(ps) / len(ps) for name, ps in team_raw.items()}
+
+
+def get_active_sport_keys(exclude_outrights: bool = True) -> list[str]:
+    """
+    Return all active sport keys from The Odds API.
+    Cached for the process lifetime. Falls back to settings.SUPPORTED_SPORTS.
+    """
+    global _sports_cache
+    if _sports_cache is not None:
+        return _sports_cache
+    try:
+        sports = get_sports()
+        keys = [
+            s["key"] for s in sports
+            if s.get("active")
+            and not (exclude_outrights and s.get("has_outrights", False))
+        ]
+        _sports_cache = keys
+        return keys
+    except Exception:
+        return list(settings.SUPPORTED_SPORTS)
+
+
+def get_odds_with_movement(sport: str) -> list[dict]:
+    """
+    Same as get_consensus_probs() but adds home_line_move / away_line_move
+    vs the previous call (0.0 on first scan).
+    Used by value_betting.scan_sport_for_value.
+    """
+    events = get_consensus_probs(sport)
+    for evt in events:
+        eid = evt["event_id"]
+        prev = _prob_snapshot.get(eid)
+        evt["home_line_move"] = (evt["home_prob"] - prev["home_prob"]) if prev else 0.0
+        evt["away_line_move"] = (evt["away_prob"] - prev["away_prob"]) if prev else 0.0
+        _prob_snapshot[eid] = {"home_prob": evt["home_prob"], "away_prob": evt["away_prob"]}
+    return events

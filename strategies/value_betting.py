@@ -12,6 +12,7 @@ Two modes:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -176,37 +177,85 @@ def _composite_score(edge_s: float, consensus_s: float, line_s: float) -> float:
     )
 
 
-# --- Sport rotation ---
+# ---------------------------------------------------------------------------
+# Outright championship scan — the correct approach for Polymarket
+#
+# Polymarket has no per-match h2h markets. It has outright winner markets:
+#   "Will the Carolina Hurricanes win the 2026 NHL Stanley Cup?"
+#   "Will Arsenal win the 2025-26 English Premier League?"
+# We compare these to bookmaker outright odds from The Odds API.
+# ---------------------------------------------------------------------------
 
-_sport_cursor: int = 0
+# Maps competition keywords → The Odds API outright sport key
+_COMPETITION_MAP: dict[str, str] = {
+    "stanley cup":              "icehockey_nhl_championship_winner",
+    "nhl":                      "icehockey_nhl_championship_winner",
+    "nba championship":         "basketball_nba_championship_winner",
+    "nba finals":               "basketball_nba_championship_winner",
+    "world series":             "baseball_mlb_world_series_winner",
+    "super bowl":               "americanfootball_nfl_super_bowl_winner",
+    "fifa world cup":           "soccer_fifa_world_cup_winner",
+    "world cup":                "soccer_fifa_world_cup_winner",
+    "masters":                  "golf_masters_tournament_winner",
+    "pga championship":         "golf_pga_championship_winner",
+    "the open":                 "golf_the_open_championship_winner",
+    "us open":                  "golf_us_open_winner",
+    "ncaab":                    "basketball_ncaab_championship_winner",
+    "march madness":            "basketball_ncaab_championship_winner",
+}
+
+_OUTRIGHT_RE = re.compile(
+    r"Will (?:the )?(.*?) win (?:the )?(.*?)(?:\?|$)", re.IGNORECASE
+)
+
+# Cache outright bookmaker probs so one competition = one API call per scan
+_outright_cache: dict[str, dict[str, float]] = {}
 
 
-def _get_sports_batch() -> list[str]:
-    global _sport_cursor
-    from apis.odds_api_io import get_active_sport_keys
-    all_sports = get_active_sport_keys()
-    if not all_sports:
-        return []
-    n = settings.VALUE_SPORTS_PER_CYCLE
-    batch = all_sports[_sport_cursor: _sport_cursor + n]
-    if len(batch) < n:
-        batch += all_sports[: n - len(batch)]
-    _sport_cursor = (_sport_cursor + n) % len(all_sports)
-    return batch
+def _parse_outright_question(question: str) -> Optional[tuple[str, str]]:
+    """Return (team_name, competition_name) or None."""
+    m = _OUTRIGHT_RE.match(question)
+    return (m.group(1).strip(), m.group(2).strip()) if m else None
 
 
-# --- Core scan ---
+def _map_competition(comp: str) -> Optional[str]:
+    cl = comp.lower()
+    for keyword, sport_key in _COMPETITION_MAP.items():
+        if keyword in cl:
+            return sport_key
+    return None
+
+
+def _fuzzy_match_team(poly_team: str, book_probs: dict[str, float]) -> Optional[tuple[str, float]]:
+    """Match Polymarket team name against bookmaker team names."""
+    pl = poly_team.lower().strip()
+    # Exact
+    for bk, prob in book_probs.items():
+        if pl == bk.lower():
+            return bk, prob
+    # Substring
+    for bk, prob in book_probs.items():
+        bl = bk.lower()
+        if pl in bl or bl in pl:
+            return bk, prob
+    # Word overlap (≥2 words)
+    pw = set(pl.split())
+    for bk, prob in book_probs.items():
+        if len(pw & set(bk.lower().split())) >= 2:
+            return bk, prob
+    return None
+
 
 def scan_sport_for_value(
     sport: str,
     poly_markets: Optional[list[dict]] = None,
 ) -> list[ValueSignal]:
     """
-    Scan one sport for standalone value opportunities.
-    Reuses Polymarket matching + mid-price logic from sports_divergence.
+    Legacy per-sport scan — kept for backward compatibility with tests.
+    In practice, standalone_value_scan() uses the outright championship flow.
     """
     from apis import gamma_api
-    from apis.odds_api_io import get_odds_with_movement
+    from apis.odds_api import get_odds_with_movement
 
     try:
         events = get_odds_with_movement(sport)
@@ -217,11 +266,7 @@ def scan_sport_for_value(
         return []
 
     if poly_markets is None:
-        # Handle "sport_slug/league_slug" composite from odds_api_io
-        if "/" in sport:
-            sport_label = sport.split("/", 1)[1].replace("-", " ").title()
-        else:
-            sport_label = sport.replace("_", " ").title()
+        sport_label = sport.replace("_", " ").title()
         try:
             poly_markets = gamma_api.get_sports_markets(sport_label)
         except Exception as exc:
@@ -249,7 +294,6 @@ def scan_sport_for_value(
 
         question = matched.get("question", "")
 
-        # Determine which team YES maps to — same heuristic as sports_divergence
         if home.lower() in question.lower():
             book_prob  = event["home_prob"]
             line_move  = event["home_line_move"]
@@ -261,13 +305,10 @@ def scan_sport_for_value(
             line_move  = event["home_line_move"]
 
         raw_edge = book_prob - poly_prob
-
-        # Hard gate: minimum edge required
         if abs(raw_edge) < settings.VALUE_MIN_EDGE:
             continue
 
         side = "YES" if raw_edge > 0 else "NO"
-
         edge_s      = _score_edge(abs(raw_edge))
         consensus_s = _score_consensus(event["bookmaker_count"])
         line_s      = _score_line_movement(line_move, side)
@@ -277,19 +318,12 @@ def scan_sport_for_value(
             continue
 
         sig = ValueSignal(
-            market_id=yes_tid,
-            question=question,
-            poly_prob=poly_prob,
-            side=side,
-            sport=sport,
-            home_team=home,
-            away_team=away,
+            market_id=yes_tid, question=question, poly_prob=poly_prob, side=side,
+            sport=sport, home_team=home, away_team=away,
             commence_time=event.get("commence_time", ""),
-            book_prob=book_prob,
-            raw_edge=raw_edge,
+            book_prob=book_prob, raw_edge=raw_edge,
             bookmaker_count=event["bookmaker_count"],
-            line_move=line_move,
-            composite_score=score,
+            line_move=line_move, composite_score=score,
         )
         signals.append(sig)
         logger.info("[ValueScan] Signal: %s", sig)
@@ -300,23 +334,110 @@ def scan_sport_for_value(
 
 def standalone_value_scan(bankroll: float) -> list[ValueBet]:
     """
-    Scan a rotating batch of sports for value opportunities.
-    Returns ValueBet list sorted by composite_score descending.
+    Scan Polymarket championship winner markets vs bookmaker outright odds.
+
+    Strategy:
+      1. Fetch active Polymarket markets and filter for "Will X win the Y?" patterns
+      2. Map competition name → The Odds API outright sport key
+      3. Fetch bookmaker consensus probability for each team (one call per competition)
+      4. Score edge + consensus and filter by composite threshold
+      5. Size with fractional Kelly and return sorted by composite score
     """
-    sports = _get_sports_batch()
-    if not sports:
-        logger.warning("[ValueScan] No sports available")
+    from apis import gamma_api, extract_token_ids
+    from apis.odds_api import get_outright_probs
+
+    # --- Fetch Polymarket markets ---
+    poly_markets: list[dict] = []
+    for offset in range(0, 500, 100):
+        try:
+            batch = gamma_api.get_active_markets(limit=100, offset=offset)
+        except Exception as exc:
+            logger.warning("[ValueScan] Gamma fetch failed at offset %d: %s", offset, exc)
+            break
+        if not batch:
+            break
+        poly_markets.extend(batch)
+
+    logger.info("[ValueScan] Polymarket: %d active markets fetched", len(poly_markets))
+
+    # --- Parse outright candidates ---
+    # (question, team, sport_key, yes_tid, poly_prob)
+    candidates: list[tuple[str, str, str, str, float]] = []
+    for mkt in poly_markets:
+        question = mkt.get("question", "")
+        parsed = _parse_outright_question(question)
+        if not parsed:
+            continue
+        team, comp = parsed
+        sport_key = _map_competition(comp)
+        if not sport_key:
+            continue
+        yes_tid, _ = extract_token_ids(mkt)
+        if not yes_tid:
+            continue
+        # Use Gamma bid/ask — avoids CLOB call (outrights often lack a CLOB orderbook)
+        try:
+            bid = float(mkt.get("bestBid") or 0)
+            ask = float(mkt.get("bestAsk") or 1)
+        except (TypeError, ValueError):
+            continue
+        if ask <= 0 or ask <= bid:
+            continue
+        poly_prob = (bid + ask) / 2.0
+        candidates.append((question, team, sport_key, yes_tid, poly_prob))
+
+    logger.info("[ValueScan] %d outright candidates matched", len(candidates))
+    if not candidates:
         return []
 
-    all_signals: list[ValueSignal] = []
-    for sport in sports:
+    # --- Fetch bookmaker outright probs (one call per competition) ---
+    sport_keys_needed = {c[2] for c in candidates}
+    _outright_cache.clear()
+    for sk in sport_keys_needed:
         try:
-            all_signals.extend(scan_sport_for_value(sport))
+            _outright_cache[sk] = get_outright_probs(sk)
+            logger.info("[ValueScan] %s: %d teams from bookmakers", sk, len(_outright_cache[sk]))
         except Exception as exc:
-            logger.warning("[ValueScan] Error scanning %s: %s", sport, exc)
+            logger.warning("[ValueScan] Outright odds failed for %s: %s", sk, exc)
 
+    # --- Score each candidate ---
+    signals: list[ValueSignal] = []
+    for question, team, sport_key, yes_tid, poly_prob in candidates:
+        book_probs = _outright_cache.get(sport_key, {})
+        if not book_probs:
+            continue
+
+        match = _fuzzy_match_team(team, book_probs)
+        if not match:
+            continue
+        _, book_prob = match
+
+        raw_edge = book_prob - poly_prob
+        if abs(raw_edge) < settings.VALUE_MIN_EDGE:
+            continue
+
+        side = "YES" if raw_edge > 0 else "NO"
+        bk_count = len(book_probs)
+        edge_s      = _score_edge(abs(raw_edge))
+        consensus_s = _score_consensus(bk_count)
+        line_s      = 0.5  # no line-movement signal for outrights
+        score       = _composite_score(edge_s, consensus_s, line_s)
+
+        if score < settings.VALUE_MIN_COMPOSITE_SCORE:
+            continue
+
+        sig = ValueSignal(
+            market_id=yes_tid, question=question, poly_prob=poly_prob, side=side,
+            sport=sport_key, home_team=team, away_team="",
+            commence_time="", book_prob=book_prob, raw_edge=raw_edge,
+            bookmaker_count=bk_count, line_move=0.0, composite_score=score,
+        )
+        signals.append(sig)
+        logger.info("[ValueScan] Signal: %s", sig)
+
+    # --- Convert to ValueBets ---
     bets: list[ValueBet] = []
-    for sig in all_signals:
+    for sig in signals:
         market_price = sig.poly_prob if sig.side == "YES" else (1.0 - sig.poly_prob)
         true_prob    = sig.book_prob if sig.side == "YES" else (1.0 - sig.book_prob)
         suggested    = kelly_size(true_prob, market_price, bankroll)
@@ -324,13 +445,11 @@ def standalone_value_scan(bankroll: float) -> list[ValueBet]:
             continue
         capped = min(suggested, settings.MAX_POSITION_USDC)
         bets.append(ValueBet(
-            signal=sig,
-            edge=sig.raw_edge,
+            signal=sig, edge=abs(sig.raw_edge),
             kelly_fraction=suggested / bankroll if bankroll > 0 else 0,
-            suggested_size_usdc=suggested,
-            capped_size_usdc=capped,
+            suggested_size_usdc=suggested, capped_size_usdc=capped,
         ))
 
     bets.sort(key=lambda b: b.signal.composite_score, reverse=True)
-    logger.info("[ValueScan] standalone_value_scan: %d bets across %s", len(bets), sports)
+    logger.info("[ValueScan] standalone_value_scan: %d bets from %d candidates", len(bets), len(candidates))
     return bets
