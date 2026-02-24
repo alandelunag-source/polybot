@@ -69,6 +69,21 @@ def cmd_scan(args: argparse.Namespace) -> None:
                 print(sig)
                 print()
 
+    elif strategy == "political":
+        from strategies.political_arb import scan_political
+
+        print("Fetching markets from Polymarket + Kalshi...")
+        signals = scan_political()
+        metrics.record_scan("political", 0, len(signals))
+
+        if not signals:
+            print("No political arbitrage opportunities found.")
+        else:
+            print(f"\nFound {len(signals)} political arb signal(s):\n")
+            for sig in signals:
+                print(sig)
+                print()
+
     elif strategy == "value":
         bankroll = args.bankroll or 1000.0
         if args.sport:
@@ -356,7 +371,7 @@ def main() -> None:
     scan_p = sub.add_parser("scan", help="Run a one-shot strategy scan")
     scan_p.add_argument(
         "--strategy",
-        choices=["arb", "divergence", "value"],
+        choices=["arb", "divergence", "value", "political"],
         default="arb",
         help="Strategy to run (default: arb)",
     )

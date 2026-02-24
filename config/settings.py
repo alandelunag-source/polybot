@@ -47,6 +47,14 @@ DRY_RUN: bool = BOT_MODE != "live"
 SCAN_INTERVAL_SECONDS: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "300"))
 MAX_MARKETS_PER_SCAN: int = int(os.getenv("MAX_MARKETS_PER_SCAN", "200"))
 
+# --- Kalshi ---
+KALSHI_API_TOKEN: str = os.getenv("KALSHI_API_TOKEN", "")
+
+# --- Political arb thresholds ---
+POLITICAL_MIN_EDGE: float = float(os.getenv("POLITICAL_MIN_EDGE", "0.03"))      # 3%
+POLITICAL_MAX_SPREAD: float = float(os.getenv("POLITICAL_MAX_SPREAD", "0.05"))  # 5%
+POLITICAL_MIN_MATCH_SCORE: float = float(os.getenv("POLITICAL_MIN_MATCH_SCORE", "0.40"))
+
 # --- Odds-API.io (standalone value betting) ---
 # Free tier: 2,400 req/day.
 # Quota math: 2 leagues × (1 events + ~5 odds) × 288 cycles/day ≈ 1,728/day ✓
