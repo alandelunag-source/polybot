@@ -108,6 +108,40 @@ def cmd_scan(args: argparse.Namespace) -> None:
                 print(bet)
                 print()
 
+
+    elif strategy == 'crypto_ladder':
+        from strategies.crypto_ladder import scan_crypto_ladder
+        print('Scanning Polymarket crypto price ladder markets...')
+        arbs = scan_crypto_ladder()
+        metrics.record_scan('crypto_ladder', 0, len(arbs))
+        if not arbs:
+            print('No ladder arbitrage violations found.')
+        else:
+            print(f"Found {len(arbs)} ladder arb violation(s):"); print()
+            for arb in arbs:
+                print(arb)
+                print()
+
+    elif strategy == 'metaculus':
+        bankroll = args.bankroll or 1000.0
+        from strategies.metaculus_divergence import scan_metaculus_divergence, to_value_bets
+        print(f'Scanning Metaculus vs Polymarket divergences  (bankroll=${bankroll:.2f})...')
+        signals = scan_metaculus_divergence()
+        metrics.record_scan('metaculus', 0, len(signals))
+        if not signals:
+            print('No Metaculus divergences found.')
+        else:
+            print(f"Found {len(signals)} divergence signal(s):"); print()
+            for sig in signals:
+                print(sig)
+                print()
+            bets = to_value_bets(signals, bankroll)
+            if bets:
+                print(f"Kelly-sized bets ({len(bets)}):"); print()
+                for bet in bets:
+                    print(bet)
+                    print()
+
     else:
         print(f"Unknown strategy: {strategy}")
         sys.exit(1)
@@ -371,7 +405,7 @@ def main() -> None:
     scan_p = sub.add_parser("scan", help="Run a one-shot strategy scan")
     scan_p.add_argument(
         "--strategy",
-        choices=["arb", "divergence", "value", "political"],
+        choices=["arb", "divergence", "value", "political", "crypto_ladder", "metaculus"],
         default="arb",
         help="Strategy to run (default: arb)",
     )
